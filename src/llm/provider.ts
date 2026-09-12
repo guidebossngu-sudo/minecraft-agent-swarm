@@ -1,12 +1,6 @@
 // src/llm/provider.ts
 // One chat() call the rest of the codebase uses, backed by either Ollama or any
 // OpenAI-compatible endpoint.
-//
-// The six call sites in index.ts all send the same shape and all read
-// response.message.content, so the adapter speaks Ollama's vocabulary and
-// translates for OpenAI rather than the other way round. That keeps the default
-// path byte-identical: with LLM_PROVIDER unset, requests go straight to the
-// Ollama client exactly as before.
 
 import { Ollama } from "ollama";
 import { config } from "../config.js";
@@ -41,15 +35,6 @@ const ollama = new Ollama({ host: config.ollama.host });
 /** Body for POST {baseUrl}/chat/completions.
  *
  *  Pure and exported so the mapping is testable without a network or a key.
- *
- *  Two Ollama parameters have no honest OpenAI equivalent and are dropped rather
- *  than approximated:
- *    think          Ollama-specific reasoning toggle. OpenAI reasoning models
- *                   take a different parameter with different semantics, and
- *                   guessing a mapping would silently change behaviour.
- *    repeat_penalty Multiplicative (1.15 here). OpenAI's frequency_penalty is
- *                   additive on a -2..2 scale, so the numbers are not
- *                   interchangeable and a naive copy would be wrong.
  */
 export function toOpenAIRequest(req: ChatRequest): Record<string, unknown> {
   const body: Record<string, unknown> = {
@@ -62,19 +47,16 @@ export function toOpenAIRequest(req: ChatRequest): Record<string, unknown> {
   return body;
 }
 
-/** Pull the assistant text out of an OpenAI chat completion.
- *
- *  Gateways vary: some omit `content` on a refusal, some send null. Callers here
- *  do .trim()/.slice() on the result, so an empty string is the only safe miss
- *  value — undefined would turn a bad response into a TypeError several frames
- *  away from the cause. */
+/** Pull the assistant text out of an OpenAI chat completion. */
 export function fromOpenAIResponse(data: unknown): ChatResponse {
   const choice = (data as { choices?: Array<{ message?: { content?: string | null } }> })?.choices?.[0];
   return { message: { content: choice?.message?.content ?? "" } };
 }
 
 async function openAIChat(req: ChatRequest): Promise<ChatResponse> {
-  const { baseUrl, apiKey } = config.openai;
+  const baseUrl = config.llm.baseUrl || config.openai.baseUrl;
+  const apiKey = config.llm.apiKey || config.openai.apiKey;
+
   const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/chat/completions`, {
     method: "POST",
     headers: {
@@ -85,8 +67,6 @@ async function openAIChat(req: ChatRequest): Promise<ChatResponse> {
   });
 
   if (!res.ok) {
-    // Include the body. A bare "401" sends people hunting through config; the
-    // provider's own message usually names the problem outright.
     const detail = await res.text().catch(() => "");
     throw new Error(
       `OpenAI request failed: ${res.status} ${res.statusText}${detail ? ` — ${detail.slice(0, 300)}` : ""}`,
@@ -102,27 +82,22 @@ export async function chat(req: ChatRequest): Promise<ChatResponse> {
   return (await ollama.chat({ ...req, stream: false })) as ChatResponse;
 }
 
-/** Fail at startup, not on the first decision.
- *
- *  A missing key otherwise surfaces as a 401 inside the first strategic query,
- *  where it is caught by the same handler that covers ordinary LLM hiccups and
- *  the bots quietly fall back instead of reporting a misconfiguration. */
+/** Fail at startup, not on the first decision. */
 export function assertProviderConfigured(): void {
   if (config.llm.provider !== "openai") return;
-  if (!config.openai.apiKey) {
-    throw new Error(
-      "LLM_PROVIDER=openai but OPENAI_API_KEY is not set. " +
-        "Add it to .env, or unset LLM_PROVIDER to use local Ollama.",
+
+  const apiKey = config.llm.apiKey || config.openai.apiKey;
+  const plannerModel = config.llm.models.planner || config.openai.model;
+
+  if (!apiKey) {
+    console.warn(
+      "[LLM Warning] Cảnh báo: API Key đang để trống. Nếu server AI của bạn không yêu cầu Key (VD: vLLM/Local API) thì có thể bỏ qua."
     );
   }
-  // No default model on purpose — see config.ts. Naming one here would rot the
-  // same way, so say what to do instead of guessing on the user's behalf.
-  if (!config.openai.model) {
+
+  if (!plannerModel) {
     throw new Error(
-      "LLM_PROVIDER=openai but OPENAI_MODEL is not set. " +
-        "Model IDs change often, so pick a current one from your provider " +
-        `(OpenAI: curl ${config.openai.baseUrl}/models -H "Authorization: Bearer $OPENAI_API_KEY"). ` +
-        "See the OpenAI section of the README for examples.",
+      "LLM_PROVIDER=openai nhưng Model chưa được cấu hình. Hãy nhập tên Model khi CLI khởi động."
     );
   }
 }
