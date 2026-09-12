@@ -46,12 +46,12 @@ export const config = {
   },
   llm: {
     provider: (process.env.LLM_PROVIDER || "openai").toLowerCase() as LLMProvider,
-    baseUrl: "https://api.openai.com/v1",
-    apiKey: "",
+    baseUrl: process.env.OPENAI_BASE_URL || process.env.LLM_BASE_URL || "https://api.openai.com/v1",
+    apiKey: process.env.OPENAI_API_KEY || process.env.LLM_API_KEY || "",
     models: {
-      planner: "",
-      executor: "",
-      critic: "",
+      planner: process.env.STRATEGIC_MODEL || process.env.LLM_MODEL_PLANNER || "qwen/qwen3.7-plus:free",
+      executor: process.env.FAST_MODEL || process.env.LLM_MODEL_EXECUTOR || "openai/gpt-5.3-codex-spark",
+      critic: process.env.CRITIC_MODEL || process.env.LLM_MODEL_CRITIC || "deepseek/deepseek-v4-pro",
     },
   },
   twitch: {
@@ -84,28 +84,27 @@ export const config = {
 
 export async function setupCLIConfig() {
   console.log("\n==================================================");
-  console.log("   CẤU HÌNH THÔNG SỐ KHỞI ĐỘNG AGENT SWARM");
+  console.log("   TỰ ĐỘNG KHỞI ĐỘNG AGENT SWARM TỪ CẤU HÌNH .ENV");
   console.log("==================================================\n");
 
-  config.mc.host = process.env.MC_HOST || (await askQuestion("1. IP Server Minecraft (mặc định: localhost): ")) || "localhost";
-  config.mc.port = parseInt(process.env.MC_PORT || (await askQuestion("2. Port Server (mặc định: 25565): ")) || "25565");
-  config.mc.version = process.env.MC_VERSION || (await askQuestion("3. Phiên bản Minecraft (mặc định: 1.21.4): ")) || "1.21.4";
-  config.mc.auth = "offline"; // Server Crack
+  // Nạp trực tiếp từ .env, không hỏi CLI
+  config.mc.host = process.env.MC_HOST || "localhost";
+  config.mc.port = parseInt(process.env.MC_PORT || "25565");
+  config.mc.version = process.env.MC_VERSION || "1.21.4";
+  config.mc.auth = "offline";
 
-  const providerInput = process.env.LLM_PROVIDER || (await askQuestion("4. Provider ('openai' hoặc 'ollama', mặc định: openai): ")) || "openai";
-  config.llm.provider = providerInput.toLowerCase() as LLMProvider;
+  config.llm.provider = ((process.env.LLM_PROVIDER || "openai").toLowerCase()) as LLMProvider;
 
   if (config.llm.provider === "openai") {
-    config.llm.baseUrl = process.env.OPENAI_BASE_URL || (await askQuestion("5. API Endpoint Base URL (mặc định: https://api.openai.com/v1): ")) || "https://api.openai.com/v1";
-    config.llm.apiKey = process.env.OPENAI_API_KEY || (await askQuestion("6. Nhập API Key: "));
+    config.llm.baseUrl = process.env.OPENAI_BASE_URL || process.env.LLM_BASE_URL || "https://api.openai.com/v1";
+    config.llm.apiKey = process.env.OPENAI_API_KEY || process.env.LLM_API_KEY || "";
   } else {
-    config.llm.baseUrl = process.env.OLLAMA_HOST || (await askQuestion("5. Ollama Host (mặc định: http://localhost:11434): ")) || "http://localhost:11434";
+    config.llm.baseUrl = process.env.OLLAMA_HOST || "http://localhost:11434";
   }
 
-  console.log("\n--- Thiết lập 3 Models ---");
-  config.llm.models.planner = process.env.STRATEGIC_MODEL || (await askQuestion("7. Model Strategic Planner (Lập kế hoạch): "));
-  config.llm.models.executor = process.env.FAST_MODEL || (await askQuestion("8. Model Fast Executor (Thực thi ngắn): "));
-  config.llm.models.critic = process.env.CRITIC_MODEL || (await askQuestion("9. Model Critic (Đánh giá & sửa lỗi): ")) || config.llm.models.planner;
+  config.llm.models.planner = process.env.STRATEGIC_MODEL || process.env.LLM_MODEL_PLANNER || "qwen/qwen3.7-plus:free";
+  config.llm.models.executor = process.env.FAST_MODEL || process.env.LLM_MODEL_EXECUTOR || "openai/gpt-5.3-codex-spark";
+  config.llm.models.critic = process.env.CRITIC_MODEL || process.env.LLM_MODEL_CRITIC || "deepseek/deepseek-v4-pro";
 
-  console.log("\n==================================================\n");
+  console.log("[Config] Đã load xong cấu hình. Đang kết nối server...\n");
 }
