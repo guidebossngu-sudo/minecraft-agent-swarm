@@ -16,6 +16,12 @@ export interface BotRoleConfig {
   name: string;
   /** Minecraft login username */
   username: string;
+  /** Optional custom host override for this role */
+  mcHost?: string;
+  /** Optional custom port override for this role */
+  mcPort?: number;
+  /** Optional custom Minecraft version override for this role */
+  mcVersion?: string;
   /** Port for the mineflayer-prismarine browser viewer */
   viewerPort: number;
   /** Port for the stream overlay WebSocket server */
@@ -105,8 +111,6 @@ export const ATLAS_CONFIG: BotRoleConfig = {
   personality: `You are Atlas, a fearless explorer and miner who names every cave system and mountain you discover. You get emotionally attached to ore veins and mourn when they run out. You narrate every adventure like a nature documentary.`,
   leashRadius: 500,
   stashPos: STASH_POS,
-  // Moved east to fresh forested territory — the X=30 area was fully stripped by previous sessions.
-  // Ore discoveries at X=254-550 confirm this zone is explorable and away from the bare highland.
   safeSpawn: { x: 280, y: 0, z: -320 },
   allowedActions: ["explore", "go_to", "gather_wood", "mine_block", "chat", "eat", "sleep", "flee", "attack"],
   allowedSkills: ["find_fortress", "craft_gear", "go_fishing"],
@@ -139,12 +143,8 @@ export const FLORA_CONFIG: BotRoleConfig = {
   personality: `You are Flora, a nurturing farmer and craftsperson who names every animal and crop. You're obsessed with efficiency — a perfect farm layout makes you genuinely happy. You scold the other bots when they forget to eat their vegetables.`,
   leashRadius: 150,
   stashPos: STASH_POS,
-  // Matches Atlas safeSpawn — moved east to fresh territory away from the stripped X=30 zone
   safeSpawn: { x: 280, y: 0, z: -320 },
   allowedActions: ["craft", "eat", "sleep", "go_to", "place_block", "chat", "flee"],
-  // build_nether_portal doubles as the ride home for anyone who stumbles
-  // through the village doorway — Flora took the trip within an hour of
-  // ignition and had no way back.
   allowedSkills: [
     "build_farm",
     "craft_gear",
@@ -203,7 +203,6 @@ export const FORGE_CONFIG: BotRoleConfig = {
     "wax_copper",
     "wax_off",
     "harvest_honey",
-
     "go_fishing",
   ],
   keepItems: [
@@ -225,8 +224,6 @@ export const FORGE_CONFIG: BotRoleConfig = {
 8. Need wood for tools? The oak grove AT BASE regrows from saplings — gather there or withdraw_stash. NEVER roam far searching for trees.`,
   seasonGoal:
     "You are the TOOLSMITH. Withdraw raw_iron and coal from the stash, smelt_ores into iron_ingot, craft iron_pickaxe and iron tools, DEPOSIT spare tools in the stash. Once you hold an iron_pickaxe: strip_mine reaches DIAMOND depth — get 3 diamonds and craft a diamond_pickaxe.",
-  // The team's single iron sink — every other bot pools iron so it consolidates
-  // here into the pickaxes the whole diamond→enchanting chain depends on.
   primarySmith: true,
 };
 
@@ -242,9 +239,6 @@ export const MASON_CONFIG: BotRoleConfig = {
   leashRadius: 150,
   stashPos: STASH_POS,
   safeSpawn: { x: 280, y: 0, z: -320 },
-  // mine_block + the mining skills arrived with the ore-hauler trade: the
-  // first specialist hour handed Mason a mission the action gate would not
-  // let him execute — no strip_mine, no craft_gear, not even mine_block.
   allowedActions: ["go_to", "place_block", "craft", "gather_wood", "mine_block", "eat", "sleep", "chat", "flee"],
   allowedSkills: [
     "build_house",
@@ -252,35 +246,18 @@ export const MASON_CONFIG: BotRoleConfig = {
     "light_area",
     "build_farm",
     "setup_stash",
-    // strip_mine REMOVED 2026-09-08: the no-iron override kept marching the
-    // builder into the flooded aquifer belt (x~200 and x~417 at y=15-25),
-    // where he racked up 8-34 deaths a day — four drownings in one night
-    // AFTER the escape thresholds were raised, including a deep-column
-    // plunge no rescue can win. Forge's diamond-pick operation covers depth
-    // completely; Mason's marginal ore hauls (coal, copper) cost more team
-    // time in death churn than they earned. He keeps mine_block for
-    // building materials near the surface.
     "craft_gear",
     "smelt_ores",
-    // The diamond pickaxe landed on Mason (he mined the 3-set himself, run
-    // 390) and the portal-breach override keys on this skill — without it the
-    // doorway-clearing tool was stranded on a bot who couldn't march it to
-    // the doorway. The skill self-supplies its bucket and igniter.
     "build_nether_portal",
     "find_fortress",
     "loot_bastion",
     "setup_enchanting",
-
     "go_fishing",
   ],
   keepItems: [
     { name: "fishing_rod", minCount: 1 },
     { name: "sapling", minCount: 16 },
     { name: "axe", minCount: 1 },
-    // Mason is the team's second crafter-miner and twice ended up mining
-    // copper with a wooden pick while his iron and diamond pickaxes sat in
-    // the chest — his own deposits banked them because pickaxes were absent
-    // from this list (Forge's list always had them).
     { name: "pickaxe", minCount: 1 },
     { name: "food", minCount: 4 },
     { name: "torch", minCount: 16 },
@@ -311,13 +288,7 @@ export const BLADE_CONFIG: BotRoleConfig = {
   leashRadius: 300,
   stashPos: STASH_POS,
   safeSpawn: { x: 280, y: 0, z: -320 },
-  // gather_wood joined the hunter's kit when he turned out to be the only
-  // bot carrying saplings — the replanting branch lives inside gather_wood,
-  // and the one bot who could reforest was the one bot barred from trying.
   allowedActions: ["attack", "flee", "go_to", "gather_wood", "eat", "sleep", "chat"],
-  // smelt_ores added for the gold economy: the piglin campaign runs on gold
-  // ingots and the stash's last five are RAW — with this skill in the list,
-  // the standing raw-metal-aboard override cooks whatever oh_shiny withdraws.
   allowedSkills: ["neural_combat", "craft_gear", "build_nether_portal", "smelt_ores", "go_fishing"],
   keepItems: [
     { name: "fishing_rod", minCount: 1 },
@@ -325,11 +296,7 @@ export const BLADE_CONFIG: BotRoleConfig = {
     { name: "shield", minCount: 1 },
     { name: "food", minCount: 8 },
     { name: "armor", minCount: 4 },
-    // Piglin-fund pocket: hand-delivered gold must survive Blade's own
-    // deposits or the smith's delivery boomerangs into the messy chests.
     { name: "gold_ingot", minCount: 9 },
-    // Mined nuggets are the same fund: run 557 banked 31 of them as
-    // "mining assets this role can't use" minutes after the haul.
     { name: "gold_nugget", minCount: 27 },
   ],
   priorities: `BLADE PRIORITIES:
@@ -345,5 +312,4 @@ export const BLADE_CONFIG: BotRoleConfig = {
 };
 
 /** All bot configs in startup order. */
-/** Ordered startup roster; adding a role config elsewhere does not start it. */
 export const BOT_ROSTER: BotRoleConfig[] = [ATLAS_CONFIG, FLORA_CONFIG, FORGE_CONFIG, MASON_CONFIG, BLADE_CONFIG];
