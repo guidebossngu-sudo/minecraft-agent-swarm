@@ -29,7 +29,6 @@ import { createFallTracker, isFallDeath } from "./fall-tracker.js";
 import { shouldFleeOnRespawn } from "./respawn-safety.js";
 import { isHostile } from "./perception.js";
 import { executeAction } from "./actions.js";
-import { mineflayer as mineflayerViewer } from "prismarine-viewer";
 
 // Re-export types used by src/index.ts
 export type { ChatMessage, BrainEvents as BotEvents };
@@ -449,26 +448,11 @@ export async function createBot(events: BrainEvents, roleConfig: BotRoleConfig =
       );
     });
 
-    // Start browser viewer
+    // Start browser viewer (dùng viewer tích hợp sẵn)
     if (isUnifiedViewerStarted()) {
       registerViewerBot(roleConfig.name, bot);
     } else {
       startViewer(bot, roleConfig.viewerPort);
-    }
-
-    // 🎥 TÍCH HỢP VIEW 3D F5 BẰNG PRISMARINE-VIEWER
-    try {
-      const portOffset = BOT_ROSTER.findIndex((b) => b.name === roleConfig.name);
-      const vPort = 3000 + (portOffset >= 0 ? portOffset : 0);
-
-      mineflayerViewer(bot, {
-        port: vPort,
-        firstPerson: false,
-        viewDistance: 6,
-      });
-      console.log(`[3D-Viewer] 🎥 ${roleConfig.name} View 3D live at http://localhost:${vPort}`);
-    } catch (vErr) {
-      console.warn(`[3D-Viewer] Cannot start prismarine-viewer for ${roleConfig.name}:`, vErr);
     }
 
     // Pathfinder config
