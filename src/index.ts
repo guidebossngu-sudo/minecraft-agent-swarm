@@ -1,7 +1,7 @@
 import { createBot } from "./bot/index.js";
 import { createTwitchChat } from "./stream/twitch.js";
 import { startOverlay, addChatMessage } from "./stream/overlay.js";
-import { config } from "./config.js";
+import { config, setupCLIConfig } from "./config.js";
 import { loadDynamicSkills } from "./skills/dynamic-loader.js";
 import { BOT_ROSTER, BotRoleConfig } from "./bot/role.js";
 import { startUnifiedViewer } from "./stream/unified-viewer.js";
@@ -165,6 +165,9 @@ async function runBotLoop(roleConfig: BotRoleConfig): Promise<void> {
 }
 
 async function main() {
+  // BẮT BUỘC HỎI CẤU HÌNH TRÊN CLI TRƯỚC KHI KẾT NỐI BẤT KỲ ĐÂU
+  await setupCLIConfig();
+
   assertProviderConfigured();
 
   if (config.generatedSkills.enabled) {
