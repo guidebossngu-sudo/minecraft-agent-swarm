@@ -35,6 +35,7 @@ function shutdownAll() {
   }
   process.exit(0);
 }
+
 // Register once — never overwritten
 process.on("SIGINT", shutdownAll);
 process.on("SIGTERM", shutdownAll);
@@ -43,15 +44,12 @@ const MAX_RESTARTS = 50;
 const RESTART_DELAY_MS = 30000;
 const DUPLICATE_LOGIN_DELAY_MS = 60000;
 
-// Catch unhandled promise rejections (e.g. from Twitch client, WebSocket, TCP) so they
-// don't crash the entire process — log and let the main restart loop handle recovery.
+// Catch unhandled promise rejections so they don't crash the entire process
 process.on("unhandledRejection", (reason) => {
   console.error("[Main] Unhandled rejection (caught — process kept alive):", reason);
 });
 
 // Prevent TTS/WebSocket internal errors from crashing the entire process.
-// msedge-tts can throw synchronous exceptions from WebSocket event handlers
-// (e.g. "_streams[requestId] is undefined") that bypass promise rejection handling.
 process.on("uncaughtException", (err) => {
   console.error("[Main] Uncaught exception (non-fatal — process kept alive):", err.message || err);
 });
@@ -62,10 +60,12 @@ async function startBot(
   overlayStarted: { value: boolean },
 ): Promise<string> {
   console.log(`\n=== ${roleConfig.name} (${roleConfig.role}) (restart #${restartCount}) ===`);
-  const fastLabel = config.llm.fastModel !== config.llm.model ? ` (fast decisions: ${config.llm.fastModel})` : "";
-  const endpoint = config.llm.provider === "openai" ? config.openai.baseUrl : config.ollama.host;
-  console.log(`LLM: ${config.llm.model}${fastLabel} @ ${endpoint} [${config.llm.provider}]`);
-  console.log(`Server: ${config.mc.host}:${config.mc.port} (MC ${config.mc.version})`);
+  const fastLabel = config.llm.models.executor !== config.llm.models.planner ? ` (fast decisions: ${config.llm.models.executor})` : "";
+  const endpoint = config.llm.baseUrl;
+  console.log(`LLM Planner: ${config.llm.models.planner}${fastLabel} @ ${endpoint} [${config.llm.provider}]`);
+  console.log(`LLM Executor: ${config.llm.models.executor}`);
+  console.log(`LLM Critic: ${config.llm.models.critic}`);
+  console.log(`Server: ${config.mc.host}:${config.mc.port} (MC ${config.mc.version}, Auth: ${config.mc.auth})`);
   console.log(`Idle re-plan interval: ${config.bot.idleIntervalMs}ms`);
   console.log("");
 
@@ -84,11 +84,10 @@ async function startBot(
     roleConfig,
   );
 
-  // Register for the heap guard, which needs live bot handles to abort a
-  // runaway skill before it takes the whole process down.
+  // Register for the heap guard
   LIVE_BOTS.set(roleConfig.name, bot);
 
-  // Set up Twitch chat (Atlas only — Flora doesn't need her own chat connection)
+  // Set up Twitch chat (Atlas only)
   const twitch =
     roleConfig.name === "Atlas"
       ? createTwitchChat((msg) => {
@@ -166,10 +165,6 @@ async function runBotLoop(roleConfig: BotRoleConfig): Promise<void> {
 }
 
 async function main() {
-  // Check the LLM backend is usable before spawning anything. A missing API key
-  // otherwise surfaces as a 401 inside the first strategic query, where the
-  // ordinary LLM-failure handler catches it and the bots fall back silently —
-  // looking like a dumb swarm rather than a misconfigured one.
   assertProviderConfigured();
 
   if (config.generatedSkills.enabled) {
@@ -185,15 +180,13 @@ async function main() {
     console.log(`[GeneratedSkill] Loaded ${loaded.length} approved isolated skill(s)`);
   }
 
-  // Start the unified viewer server before any bots — it needs to be ready
-  // to accept registerBot() calls when bots spawn. This serves the viewer
-  // HTML, static assets, and handles socket.io relay for bot switching.
+  // Start the unified viewer server
   await startUnifiedViewer().catch((err) => {
     console.warn("[Main] Unified viewer failed to start:", err);
   });
 
   if (!config.multiBot.enabled) {
-    // Single bot mode — just Atlas
+    // Single bot mode — Atlas
     await runBotLoop(BOT_ROSTER[0]);
     return;
   }
@@ -223,18 +216,7 @@ async function main() {
   await Promise.all(loops);
 }
 
-/**
- * Heap watchdog.
- *
- * The swarm died with "FATAL ERROR: Ineffective mark-compacts near heap limit"
- * at 4081MB, Node's default ~4GB ceiling. The hourly health check had read
- * RSS=875MB twelve minutes earlier, so the heap tripled in the gap: hourly
- * sampling cannot see a balloon that fast, and the crash left no growth curve
- * to diagnose from.
- *
- * Logs heap every 2 minutes so the next occurrence has a trend, and warns from
- * 2GB so the log says "climbing" before it says "dead".
- */
+/** Heap watchdog */
 const HEAP_LOG_MS = 120_000;
 const HEAP_WARN_MB = 2048;
 setInterval(() => {
@@ -245,36 +227,7 @@ setInterval(() => {
   else console.log(line);
 }, HEAP_LOG_MS).unref();
 
-/**
- * Fast heap guard.
- *
- * Two OOM crashes now, and the 2-minute log showed the heap flat at ~190MB
- * right up to the last sample before death at 4,081MB. So this is one runaway
- * allocation, not growth: the 2GB warning never fired because there was nothing
- * gradual to warn about. Sampling every two minutes cannot see it, and the
- * existing skill watchdogs are time-based, so a skill that eats 4GB in seconds
- * dies of OOM long before any timeout fires.
- *
- * A generated skill was mid-execution at BOTH crashes (craftFurnace, then
- * craftWoodenPlanksFromAvailableLogs). Neither skill's source contains an
- * unbounded loop, so that is correlation rather than proof — which is exactly
- * why this aborts and names the skill instead of assuming one is guilty.
- *
- * Losing one skill invocation is far cheaper than losing the process: a crash
- * costs every bot its session and drops the swarm until the next hourly check.
- *
- * KNOWN LIMITATION, proven by the third crash: this fired zero times while the
- * heap went from 173MB to 4,081MB. setInterval cannot preempt synchronous code,
- * so a tight allocation loop that never yields keeps the timer from ever
- * running. This guard can only catch a spike that happens ACROSS awaits, which
- * so far is not the failure mode. The real mitigation is heap headroom via
- * --max-old-space-size in package.json; this stays as a slow-leak backstop and
- * for naming the active skill when it does get a chance to run.
- *
- * All three crashes so far occurred during a crafting operation (craftFurnace,
- * craftWoodenPlanksFromAvailableLogs, and deposit_stash's chest craft), so
- * bot.craft / bot.recipesFor is the current lead.
- */
+/** Fast heap guard */
 const HEAP_GUARD_MS = 2_000;
 const HEAP_ABORT_MB = 1500;
 let heapGuardTripped = false;
@@ -286,7 +239,7 @@ setInterval(() => {
     heapGuardTripped = false;
     return;
   }
-  if (heapGuardTripped) return; // already acted this episode
+  if (heapGuardTripped) return;
   heapGuardTripped = true;
 
   console.error(`[HeapGuard] heapUsed=${usedMb}MB crossed ${HEAP_ABORT_MB}MB — aborting active skills`);
