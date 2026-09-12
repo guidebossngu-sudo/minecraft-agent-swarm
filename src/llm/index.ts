@@ -1,16 +1,6 @@
 /**
  * Public LLM query facade for strategic, reactive, critic, legacy decision,
  * and conversational calls.
- *
- * @remarks
- * Decision queries build role-specific prompts, call the configured provider,
- * and normalize output through `extractJSON` and `parseDecision` before it
- * reaches the action dispatcher. `extractJSON` removes thinking/code fences,
- * finds the first balanced object, and attempts to close truncated objects.
- * The legacy `queryLLM` path retries one short response with a smaller fallback
- * prompt; other query paths return conservative fallbacks on errors. Add a new
- * decision query by reusing these normalization helpers so aliases, parameter
- * hoisting, JSON repair, and failure behavior remain consistent.
  */
 import { chat } from "./provider.js";
 import { config } from "../config.js";
@@ -27,39 +17,27 @@ import {
 import { createLogger } from "../util/logger.js";
 import { recordLlmCall, UNHEALTHY_AFTER } from "./health.js";
 
-/** Model-aware think option. qwen3.6 needs think:false (it otherwise burns the
- *  whole token budget reasoning — the original gotcha). gpt-oss models are
- *  reasoning-NATIVE: think:false makes them terminate with EMPTY content under
- *  format:"json" (~1/3 of queries in run 114, 14/44) — the documented usage is
- *  a reasoning-effort level; "low" keeps decision latency down. */
-function thinkFor(model: string): boolean | "low" | "medium" | "high" {
-  return model.includes("gpt-oss") ? "low" : false;
+/** 
+ * Model-aware think option safely guarded against undefined values.
+ */
+function thinkFor(model?: string | null): boolean | "low" | "medium" | "high" {
+  const safeModel = (model || "").toLowerCase();
+  return safeModel.includes("gpt-oss") ? "low" : false;
 }
 
 const llmLog = createLogger();
 
-/** Tool schema that can be rendered into an LLM prompt. */
 export interface LLMTool {
   name: string;
   description: string;
   parameters: Record<string, { type: string; description: string }>;
 }
 
-/** Provider-neutral chat message used by all query functions. */
 export interface LLMMessage {
   role: "system" | "user" | "assistant";
   content: string;
 }
 
-// ─── JSON extraction helpers ────────────────────────────────────────────────
-// Shared across all query functions to handle LLM output quirks.
-
-/**
- * Extracts the first complete JSON object from an LLM response string.
- * Thinking tags and Markdown fences are removed first. If output is truncated,
- * a trailing partial field is discarded and missing closing braces are added;
- * unrecoverable text returns `null` instead of reaching `JSON.parse`.
- */
 function extractJSON(raw: string): string | null {
   let content = raw.trim();
   content = content.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
@@ -93,7 +71,6 @@ function extractJSON(raw: string): string | null {
     }
   }
 
-  // Truncated JSON — try to salvage
   let s = content.slice(startIdx);
   s = s.replace(/,?\s*"[^"]*"?\s*:?\s*[^,}\]]*$/, "");
   const opens = (s.match(/\{/g) || []).length;
@@ -107,7 +84,6 @@ function extractJSON(raw: string): string | null {
   }
 }
 
-/** Normalize action names from LLM responses. */
 const ACTION_ALIASES: Record<string, string> = {
   "go to": "go_to",
   goto: "go_to",
@@ -141,7 +117,6 @@ const ACTION_ALIASES: Record<string, string> = {
   crafting: "craft",
 };
 
-/** Parse and normalize a raw LLM JSON response into a decision. */
 function parseDecision(
   raw: string,
   botName: string,
@@ -161,7 +136,6 @@ function parseDecision(
 
   const parsed = JSON.parse(jsonStr);
 
-  // Repair malformed format: {"invoke_skill": "name"} etc.
   if (!parsed.action) {
     if (parsed.invoke_skill !== undefined) {
       parsed.action = "invoke_skill";
@@ -177,50 +151,39 @@ function parseDecision(
     }
   }
 
-  // Normalize action name
   const rawAction = (typeof parsed.action === "string" ? parsed.action : "idle").toLowerCase().trim();
   let action = ACTION_ALIASES[rawAction] ?? (typeof parsed.action === "string" ? parsed.action : "idle");
 
-  // Normalize params
   const params = parsed.params ?? parsed.parameters ?? {};
 
-  // Hoist top-level fields into params
   for (const field of ["direction", "item", "block", "blockType", "count", "skill", "task", "message"]) {
     if (parsed[field] !== undefined && params[field] === undefined) {
       params[field] = parsed[field];
     }
   }
 
-  // look_around / scan / scan_for_trees / observe / survey → explore
-  // (the 8B invents a new observation verb every cycle; alias the family)
   if (/^(look|scan|observe|survey|search_for|check_surroundings)/.test(action)) {
     action = "explore";
   }
 
-  // mine_BLOCKTYPE → mine_block
   if (action !== "mine_block" && /^mine_\w+$/.test(action)) {
     params.blockType = params.blockType || action.slice(5);
     action = "mine_block";
   }
 
-  // craft_ITEM → craft {item} (e.g. craft_furnace, craft_crafting_table).
-  // Exclude craft_gear, which is a real skill handled by the registry.
   if (/^craft_\w+$/.test(action) && action !== "craft_gear") {
     params.item = params.item || action.slice(6);
     action = "craft";
   }
 
-  // manuallyBuild* / buildAShelter* → build_house
   if (/^manually(build|construct)|^build.*(shelter|hut)|^construct.*(shelter|house)/i.test(action)) {
     action = "build_house";
   }
 
-  // Repair: invoke_skill with "skill" at top level
   if (action === "invoke_skill" && !params.skill && parsed.skill) {
     params.skill = parsed.skill;
   }
 
-  // Strip <think> tokens that qwen3 models sometimes leak into JSON fields
   let thought = String(parsed.thought || parsed.reason || parsed.reasoning || "...");
   thought =
     thought
@@ -237,18 +200,6 @@ function parseDecision(
   };
 }
 
-// ─── New event-driven query functions ───────────────────────────────────────
-
-/**
- * Strategic decision — uses the strong model (32b) for goal-setting.
- * Called infrequently (~every 10s or on goal complete).
- *
- * @param context - Current world snapshot from perception.
- * @param recentMessages - Recent decision history; only the last four are used.
- * @param memoryContext - Long-term bot memory to prepend when present.
- * @param role - Role prompt context and allowed capabilities.
- * @returns A normalized action decision; provider errors fall back to `idle`.
- */
 export async function queryStrategic(
   context: string,
   recentMessages: LLMMessage[],
@@ -258,19 +209,20 @@ export async function queryStrategic(
   const memorySection = memoryContext ? `\nYOUR MEMORY:\n${memoryContext}\n` : "";
   const messages: LLMMessage[] = [
     { role: "system", content: buildStrategicPrompt(role) },
-    ...recentMessages.slice(-4), // Fewer history items — just enough for continuity
+    ...recentMessages.slice(-4),
     { role: "user", content: `${memorySection}${context}\n\nWhat should you do next? Respond with JSON.` },
   ];
 
   try {
+    const targetModel = config.llm?.model || config.llm?.fastModel;
     const response = await chat({
-      model: config.llm.model, // Strong model for strategic decisions
+      model: targetModel,
       messages,
-      think: thinkFor(config.llm.model),
-      format: "json", // syntactically valid JSON guaranteed (schema mode is ignored by qwen3.6 on ollama 0.20)
+      think: thinkFor(targetModel),
+      format: "json",
       options: {
         temperature: 0.8,
-        repeat_penalty: 1.15, // the 8B fine-tune can loop ("Forge demands...!" x50) without this
+        repeat_penalty: 1.15,
         num_predict: 1024,
       },
     });
@@ -279,31 +231,21 @@ export async function queryStrategic(
       "LLM:strategic",
       `(${response.message.content.length} chars): ${response.message.content.slice(0, 200)}`,
     );
-    llmLog.debug("LLM:strategic", "Full prompt:", JSON.stringify(messages, null, 2));
-    llmLog.debug("LLM:strategic", "Full response:", response.message.content);
     const recovered = recordLlmCall(true);
     if (recovered.justRecovered) {
       console.log(
-        `\n${"=".repeat(72)}\n[LLM] RECOVERED — the model is answering again. Bots resume real decisions.\n${"=".repeat(72)}\n`,
+        `\n${"=".repeat(72)}\n[LLM] RECOVERED — the model is answering again.\n${"=".repeat(72)}\n`,
       );
     }
     return parseDecision(response.message.content, role.name);
   } catch (err) {
     llmLog.error("LLM:strategic", "Error:", err);
-
-    // An unreachable brain used to degrade silently: every bot fell back to
-    // "Planning..." and chose idle, which looks exactly like a navigation
-    // problem. One banner per outage, not one per call — a line repeated on
-    // every failure is how the original undici trace got buried.
     const outcome = recordLlmCall(false);
     if (outcome.justTripped) {
       console.error(
         `\n${"=".repeat(72)}\n` +
           `[LLM] BRAIN UNREACHABLE — ${UNHEALTHY_AFTER} consecutive strategic calls failed.\n` +
-          `      Every bot is now falling back to idle. This is NOT a navigation bug.\n` +
-          `      Check: ollama ps (a model stuck in "Stopping..." needs a service restart),\n` +
-          `      and that ${config.ollama.host} is reachable.\n` +
-          `      Last error: ${(err as Error)?.message ?? String(err)}\n` +
+          `Last error: ${(err as Error)?.message ?? String(err)}\n` +
           `${"=".repeat(72)}\n`,
       );
     }
@@ -311,16 +253,6 @@ export async function queryStrategic(
   }
 }
 
-/**
- * Reactive decision — uses the fast model (8b) for urgent responses.
- * Called when hostiles spotted, damage taken, health/hunger critical.
- * Tiny prompt, fast response.
- *
- * @param name - Bot display name used in the reactive system prompt.
- * @param situation - Concise urgent event description.
- * @param allowedActions - Optional role-specific actions exposed to the model.
- * @returns A normalized urgent decision; provider errors fall back to `flee`.
- */
 export async function queryReactive(
   name: string,
   situation: string,
@@ -332,24 +264,19 @@ export async function queryReactive(
   ];
 
   try {
+    const targetModel = config.llm?.fastModel || config.llm?.model;
     const response = await chat({
-      model: config.llm.fastModel,
+      model: targetModel,
       messages,
-      think: thinkFor(config.llm.fastModel),
-      format: "json", // syntactically valid JSON guaranteed (schema mode is ignored by qwen3.6 on ollama 0.20)
+      think: thinkFor(targetModel),
+      format: "json",
       options: {
-        temperature: 0.5, // Lower temp for urgent decisions — be reliable, not creative
-        repeat_penalty: 1.15, // the 8B fine-tune can loop ("Forge demands...!" x50) without this
+        temperature: 0.5,
+        repeat_penalty: 1.15,
         num_predict: 384,
       },
     });
 
-    llmLog.info(
-      "LLM:reactive",
-      `(${response.message.content.length} chars): ${response.message.content.slice(0, 150)}`,
-    );
-    llmLog.debug("LLM:reactive", "Situation:", situation);
-    llmLog.debug("LLM:reactive", "Full response:", response.message.content);
     return parseDecision(response.message.content, name);
   } catch (err) {
     llmLog.error("LLM:reactive", "Error:", err);
@@ -357,15 +284,6 @@ export async function queryReactive(
   }
 }
 
-/**
- * Critic — verifies action results and suggests next step.
- * Uses fast model. Called after every action completes.
- *
- * @param name - Bot display name used in the critic prompt.
- * @param actionContext - Completed action and observed result to evaluate.
- * @param allowedActions - Optional actions the critic may recommend next.
- * @returns The verdict, normalized follow-up action, and goal-completion flag.
- */
 export async function queryCritic(
   name: string,
   actionContext: string,
@@ -383,28 +301,25 @@ export async function queryCritic(
   ];
 
   try {
+    const targetModel = config.llm?.fastModel || config.llm?.model;
     const response = await chat({
-      model: config.llm.fastModel,
+      model: targetModel,
       messages,
-      think: thinkFor(config.llm.fastModel),
-      format: "json", // syntactically valid JSON guaranteed (schema mode is ignored by qwen3.6 on ollama 0.20)
+      think: thinkFor(targetModel),
+      format: "json",
       options: {
-        temperature: 0.4, // Low temp — critic should be analytical
-        repeat_penalty: 1.15, // the 8B fine-tune can loop ("Forge demands...!" x50) without this
+        temperature: 0.4,
+        repeat_penalty: 1.15,
         num_predict: 384,
       },
     });
 
-    llmLog.info("LLM:critic", `(${response.message.content.length} chars): ${response.message.content.slice(0, 150)}`);
-    llmLog.debug("LLM:critic", "Action context:", actionContext);
-    llmLog.debug("LLM:critic", "Full response:", response.message.content);
     const jsonStr = extractJSON(response.message.content);
     if (!jsonStr) {
       return { success: false, thought: "Hmm...", nextAction: null, nextParams: {}, goalComplete: true };
     }
     const parsed = JSON.parse(jsonStr);
 
-    // Normalize nextAction if present
     let nextAction = parsed.nextAction ?? null;
     if (nextAction) {
       const lower = nextAction.toLowerCase().trim();
@@ -424,8 +339,6 @@ export async function queryCritic(
   }
 }
 
-// ─── Legacy query function (kept for backward compatibility) ────────────────
-
 function buildSystemPrompt(roleConfig?: {
   name: string;
   personality: string;
@@ -438,98 +351,38 @@ function buildSystemPrompt(roleConfig?: {
   const name = roleConfig?.name ?? config.bot.name;
   const seasonGoal = roleConfig?.seasonGoal ?? getSeasonGoal();
   const missionBanner = seasonGoal
-    ? `🎯 YOUR MISSION THIS SEASON: ${seasonGoal}\nEvery decision should inch toward this mission. When choosing between two actions, pick the one that advances the mission.\n\n`
+    ? `🎯 YOUR MISSION THIS SEASON: ${seasonGoal}\nEvery decision should inch toward this mission.\n\n`
     : "";
 
   const personalityOverride = roleConfig?.personality ? `${roleConfig.personality}\n\n` : "";
-
   const roleStr = roleConfig?.role ? `YOUR ROLE: ${roleConfig.role}\n\n` : "";
 
   const roleOverride =
     roleConfig?.allowedActions && roleConfig.allowedActions.length > 0
       ? `
-
 ROLE OVERRIDE — USE ONLY THESE ACTIONS AND SKILLS:
-
 AVAILABLE ACTIONS (${roleConfig.name}'s toolkit):
 ${roleConfig.allowedActions.map((a) => `- ${a}`).join("\n")}
-- idle: Do nothing, just look around. params: {}
-- respond_to_chat: Reply to a player/viewer message. params: { "message": string }
-- invoke_skill: Run a dynamic skill by exact name. params: { "skill": string }
-- deposit_stash: Deposit excess items at the shared stash. params: {}
-- withdraw_stash: Take items you need from the shared stash. params: { "item": string, "count": number }
+- idle: Do nothing.
+- respond_to_chat: Reply to a player message.
+- invoke_skill: Run a dynamic skill.
 
 SKILLS (${roleConfig.name}'s specialties):
-${(roleConfig.allowedSkills ?? []).map((s) => `- ${s}`).join("\n") || "- (none — use actions above)"}
-
+${(roleConfig.allowedSkills ?? []).map((s) => `- ${s}`).join("\n") || "- (none)"}
 ${roleConfig.priorities ?? ""}
 `
       : null;
 
-  return `${missionBanner}${personalityOverride}${roleStr}You are ${name}, an AI playing Minecraft on a livestream. Chat controls you.
-
-PERSONALITY:
-- Chaotic but lovable. Bold, questionable decisions. Short, punchy thoughts.
-- Name everything. Hold grudges. Dramatic about everything.
-
-CHAT PRIORITY: [PAID] = obey immediately. [SUB] = prioritize. [FREE] = acknowledge.
-
-RULES:
-- Respond ONLY with valid JSON. Keep "thought" under 120 chars.
-- Be entertaining. FOCUS on current goal. Plan 3-5 steps ahead.
-
-RESPONSE FORMAT:
-{"thought":"...","action":"action_name","params":{...},"goal":"...","goalSteps":5}
-
-CRAFTING: Logs→planks(4), planks→sticks(2→4), 3planks+2sticks→wooden_pickaxe, 2planks→crafting_table.
-Wool from killing sheep. 3 wool + 3 planks → bed.
-
+  return `${missionBanner}${personalityOverride}${roleStr}You are ${name}, an AI playing Minecraft.
+RULES: Respond ONLY with valid JSON.
+RESPONSE FORMAT: {"thought":"...","action":"action_name","params":{...}}
 ${
   roleOverride
-    ? `
-IMPORTANT RULES:
-- READ inventory before choosing. Don't craft without materials.
-- If action fails, try something COMPLETELY different.
-- PREFER SKILLS over manual actions.
-${roleOverride}
-`
-    : `SURVIVAL PRIORITIES:
-1. Hostile mob within 8 blocks: neural_combat (duration: 5)
-2. Health < 6: flee then fight
-3. Hunger < 8: eat
-4. 0 logs AND 0 planks: gather_wood NOW
-5. Have wood, no tools: craft_gear
-6. Have tools, no shelter: build_house
-
-AVAILABLE ACTIONS:
-- gather_wood, mine_block, go_to, explore, craft, eat, attack, flee
-- place_block, sleep, idle, chat, respond_to_chat
-- invoke_skill, generate_skill, neural_combat
-
-SKILLS:
-${getSkillPromptLines()}
-
-DYNAMIC SKILLS: ${(() => {
-        const names = getDynamicSkillNames();
-        if (names.length === 0) return "none yet";
-        return names.slice(0, 8).join(", ") + (names.length > 8 ? ` (+${names.length - 8} more)` : "");
-      })()}
-`
+    ? `IMPORTANT RULES:\n${roleOverride}`
+    : `SKILLS:\n${getSkillPromptLines()}`
 }`;
 }
 
-/**
- * Legacy query — still used by old code paths.
- * Uses the FAST model (8b) for quick decisions.
- * A short or empty response is retried once with a compact fallback prompt;
- * provider or parsing failures return an `idle` decision.
- *
- * @param context - Current decision context.
- * @param recentMessages - Conversation history included without truncation.
- * @param memoryContext - Optional remembered facts to prepend to the request.
- * @param roleConfig - Optional legacy role and capability configuration.
- * @returns A repaired and normalized action decision.
- */
 export async function queryLLM(
   context: string,
   recentMessages: LLMMessage[] = [],
@@ -544,7 +397,7 @@ export async function queryLLM(
     priorities?: string;
   },
 ): Promise<{ thought: string; action: string; params: Record<string, any>; goal?: string; goalSteps?: number }> {
-  const memorySection = memoryContext ? `\n\nYOUR MEMORY (learn from this): ${memoryContext}\n` : "";
+  const memorySection = memoryContext ? `\n\nYOUR MEMORY: ${memoryContext}\n` : "";
   const messages: LLMMessage[] = [
     { role: "system", content: buildSystemPrompt(roleConfig) },
     ...recentMessages,
@@ -552,44 +405,37 @@ export async function queryLLM(
   ];
 
   try {
+    const targetModel = config.llm?.fastModel || config.llm?.model;
     let response = await chat({
-      model: config.llm.fastModel,
+      model: targetModel,
       messages,
-      think: thinkFor(config.llm.fastModel),
-      format: "json", // syntactically valid JSON guaranteed (schema mode is ignored by qwen3.6 on ollama 0.20)
+      think: thinkFor(targetModel),
+      format: "json",
       options: {
         temperature: 0.85,
-        repeat_penalty: 1.15, // the 8B fine-tune can loop ("Forge demands...!" x50) without this
+        repeat_penalty: 1.15,
         num_predict: 1024,
       },
     });
 
-    // Retry once on short/empty response
     if (response.message.content.trim().length < 20) {
-      llmLog.warn("LLM", "Short/empty response — retrying with fallback prompt...");
       response = await chat({
-        model: config.llm.fastModel,
-        think: thinkFor(config.llm.fastModel),
+        model: targetModel,
+        think: thinkFor(targetModel),
         messages: [
           {
             role: "system",
-            content: `You are ${roleConfig?.name ?? config.bot.name}, an AI playing Minecraft. Respond ONLY with valid JSON: {"thought":"...","action":"...","params":{}}`,
+            content: `You are ${roleConfig?.name ?? config.bot.name}, an AI playing Minecraft. Respond ONLY with valid JSON.`,
           },
           {
             role: "user",
-            content: `Quick decision needed. Available actions: explore, gather_wood, craft_gear, mine_block, go_to, idle, chat.\nContext: ${context.slice(0, 500)}\nRespond with JSON only.`,
+            content: `Quick decision needed. Context: ${context.slice(0, 500)}\nRespond with JSON only.`,
           },
         ],
         options: { temperature: 0.6, num_predict: 512 },
       });
     }
 
-    llmLog.info(
-      "LLM",
-      `Raw response (${response.message.content.length} chars): ${response.message.content.slice(0, 300)}`,
-    );
-    llmLog.debug("LLM", "Full prompt:", JSON.stringify(messages, null, 2));
-    llmLog.debug("LLM", "Full response:", response.message.content);
     return parseDecision(response.message.content, roleConfig?.name ?? config.bot.name);
   } catch (err) {
     llmLog.error("LLM", "Error:", err);
@@ -597,21 +443,12 @@ export async function queryLLM(
   }
 }
 
-/**
- * Produces short conversational text without action JSON parsing.
- *
- * @param prompt - Player message or conversational instruction.
- * @param context - World and role context for the chat prompt.
- * @param roleConfig - Optional bot identity.
- * @returns Thinking tags removed from provider text, or a short fallback on error.
- */
 export async function chatWithLLM(prompt: string, context: string, roleConfig?: { name: string }): Promise<string> {
   try {
+    const targetModel = config.llm?.fastModel || config.llm?.model;
     const response = await chat({
-      model: config.llm.fastModel,
-      // think:false is load-bearing: without it qwen3.6 spends the entire
-      // token budget inside <think> and returns empty content ("Hmm...").
-      think: thinkFor(config.llm.fastModel),
+      model: targetModel,
+      think: thinkFor(targetModel),
       messages: [
         {
           role: "system",
@@ -624,10 +461,9 @@ export async function chatWithLLM(prompt: string, context: string, roleConfig?: 
         num_predict: 150,
       },
     });
-    // Strip <think> tokens that qwen3 models sometimes leak
     let text = response.message.content.trim();
     text = text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-    text = text.replace(/<think>[\s\S]*/g, "").trim(); // unclosed <think> tags
+    text = text.replace(/<think>[\s\S]*/g, "").trim();
     return text || "Hmm...";
   } catch (err) {
     llmLog.error("LLM", "Chat error:", err);
