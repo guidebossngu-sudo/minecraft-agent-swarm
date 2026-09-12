@@ -165,7 +165,7 @@ async function runBotLoop(roleConfig: BotRoleConfig): Promise<void> {
 }
 
 async function main() {
-  // BẮT BUỘC HỎI CẤU HÌNH TRÊN CLI TRƯỚC KHI KẾT NỐI BẤT KỲ ĐÂU
+  // BẮT BUỘC HỎI CẤU HÌNH TRÊN CLI TRƯỚC KHI KẾT NỐI BẤT KỲ ĐÂU (Đã tự động load từ .env)
   await setupCLIConfig();
 
   assertProviderConfigured();
