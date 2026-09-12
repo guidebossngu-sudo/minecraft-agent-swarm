@@ -82,7 +82,7 @@ export async function createBot(events: BrainEvents, roleConfig: BotRoleConfig =
   memStore.load();
   memStore.healBrokenSkillsFromRegistry(new Set(skillRegistry.keys()));
 
-  console.log(`[Bot] Connecting to ${config.mc.host}:${config.mc.port} as${roleConfig.username}...`);
+  console.log(`[Bot] Connecting to ${config.mc.host}:${config.mc.port} as ${roleConfig.username}...`);
 
   const bot = mineflayer.createBot({
     host: config.mc.host,
@@ -133,13 +133,13 @@ export async function createBot(events: BrainEvents, roleConfig: BotRoleConfig =
       net.tpRecv++;
       net.last = `${Number(p?.x).toFixed(1)},${Number(p?.y).toFixed(1)},${Number(p?.z).toFixed(1)} id=${p?.teleportId}`;
       if (net.tpRecv <= 3 || net.tpRecv % 25 === 0) {
-        console.log(`[NetDebug] ${roleConfig.name} server teleport #${net.tpRecv}:${net.last}`);
+        console.log(`[NetDebug] ${roleConfig.name} server teleport #${net.tpRecv}: ${net.last}`);
       }
     });
     const timer = setInterval(() => {
       const e = bot.entity?.position;
       console.log(
-        `[NetDebug] ${roleConfig.name}: sent pos=${net.posSent} confirm=${net.confirmSent} recv teleports=${net.tpRecv} (last ${net.last \vert{}\vert{} "none"}) client at ${e ? e.floored() : "?"}`,
+        `[NetDebug] ${roleConfig.name}: sent pos=${net.posSent} confirm=${net.confirmSent} recv teleports=${net.tpRecv} (last ${net.last || "none"}) client at ${e ? e.floored() : "?"}`,
       );
       net.posSent = 0;
       net.confirmSent = 0;
@@ -167,7 +167,7 @@ export async function createBot(events: BrainEvents, roleConfig: BotRoleConfig =
     await new Promise((r) => setTimeout(r, 800));
     const p = bot.entity.position;
     console.log(
-      `[Bot] ${roleConfig.name} spawned at${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)} — no spawn commands (honest-spawn era)`,
+      `[Bot] ${roleConfig.name} spawned at ${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)} — no spawn commands (honest-spawn era)`,
     );
     spawnSafetyRunning = false;
     resolveSpawnSafetyDone();
@@ -189,7 +189,7 @@ export async function createBot(events: BrainEvents, roleConfig: BotRoleConfig =
       return;
     }
     if (message.startsWith("Gamerule ") || message.startsWith("Set spawn") || message.startsWith("Teleported ")) return;
-    console.log(`[MC Chat] ${username}:${message}`);
+    console.log(`[MC Chat] ${username}: ${message}`);
 
     if (message.startsWith("/eval ") || message === "/eval") {
       if (!config.bot.commandWhitelist.includes(username)) {
@@ -287,10 +287,7 @@ export async function createBot(events: BrainEvents, roleConfig: BotRoleConfig =
     const p = bot.entity.position;
     const at = bot.blockAt(p)?.name ?? "?";
     const below = bot.blockAt(p.offset(0, -1, 0))?.name ?? "?";
-    const ctx =
-      `controls=${held \vert{}\vert{} "none"} pathing=${bot.pathfinder?.isMoving?.() ?? "?"} ` +
-      `vel=${bot.entity.velocity.y.toFixed(2)} at=${p.x.toFixed(0)},${p.y.toFixed(0)},${p.z.toFixed(0)} ` +
-      `in=${at} on=${below}`;
+    const ctx = `controls=${held || "none"} pathing=${bot.pathfinder?.isMoving?.() ?? "?"} vel=${bot.entity.velocity.y.toFixed(2)} at=${p.x.toFixed(0)},${p.y.toFixed(0)},${p.z.toFixed(0)} in=${at} on=${below}`;
 
     const belowBlock = bot.blockAt(p.offset(0, -1, 0));
     const onSolid = belowBlock?.boundingBox === "block";
@@ -305,16 +302,16 @@ export async function createBot(events: BrainEvents, roleConfig: BotRoleConfig =
         const dist = hostile ? hostile.position.distanceTo(bot.entity.position) : null;
         if (shouldFleeOnRespawn(dist)) {
           console.log(
-            `[Respawn] ${roleConfig.name} woke up ${dist!.toFixed(1)} blocks from${hostile!.name ?? "a hostile"} — fleeing before resuming`,
+            `[Respawn] ${roleConfig.name} woke up ${dist!.toFixed(1)} blocks from ${hostile!.name ?? "a hostile"} — fleeing before resuming`,
           );
           executeAction(bot, "flee", {}).catch(() => {});
         } else {
           console.log(
-            `[Respawn] ${roleConfig.name} spawn check: nearest hostile${dist === null ? "none" : dist.toFixed(1) + " blocks"} — resuming`,
+            `[Respawn] ${roleConfig.name} spawn check: nearest hostile ${dist === null ? "none" : dist.toFixed(1) + " blocks"} — resuming`,
           );
         }
       } catch (err) {
-        console.log(`[Respawn] ${roleConfig.name} spawn check failed:${(err as Error).message}`);
+        console.log(`[Respawn] ${roleConfig.name} spawn check failed: ${(err as Error).message}`);
       }
     }, 1200);
   });
@@ -332,7 +329,7 @@ export async function createBot(events: BrainEvents, roleConfig: BotRoleConfig =
     const fallInfo =
       drop > 1 || isFallDeath(cause)
         ? ` Fell ${drop.toFixed(1)} blocks from y=${fallTracker.originY().toFixed(0)} ` +
-          `(airborne ${(fallTracker.airborneMs(Date.now()) / 1000).toFixed(1)}s,${fallTracker.originContext()})` +
+          `(airborne ${(fallTracker.airborneMs(Date.now()) / 1000).toFixed(1)}s, ${fallTracker.originContext()})` +
           ` [stood ${fallTracker.originFooting() || "NEVER ON SOLID GROUND"}` +
           ` ${fallTracker.footingAgeMs(Date.now())}ms before leaving]`
         : "";
@@ -348,7 +345,7 @@ export async function createBot(events: BrainEvents, roleConfig: BotRoleConfig =
           const win = await bot.openContainer(chest);
           await new Promise((r) => setTimeout(r, 500));
           win.close();
-          console.log(`[Bot] ${roleConfig.name} post-death inventory resync via chest at${chest.position}`);
+          console.log(`[Bot] ${roleConfig.name} post-death inventory resync via chest at ${chest.position}`);
         } catch {
           /* best effort */
         }
@@ -362,7 +359,7 @@ export async function createBot(events: BrainEvents, roleConfig: BotRoleConfig =
     if (recentDeaths.length >= LOOP_THRESHOLD && !respawnFixing) {
       respawnFixing = true;
       console.warn(
-        `[Bot] ${roleConfig.name} died ${recentDeaths.length}x in${LOOP_WINDOW_MS / 1000}s — respawn point looks lethal, resetting it`,
+        `[Bot] ${roleConfig.name} died ${recentDeaths.length}x in ${LOOP_WINDOW_MS / 1000}s — respawn point looks lethal, resetting it`,
       );
       recentDeaths = [];
       setTimeout(() => {
@@ -410,7 +407,7 @@ export async function createBot(events: BrainEvents, roleConfig: BotRoleConfig =
             dz = (vz / m) * 25;
           }
           console.log(
-            `[CampBreaker] ${roleConfig.name}:${rapidDeaths} deaths in 5min — sprinting clear` +
+            `[CampBreaker] ${roleConfig.name}: ${rapidDeaths} deaths in 5min — sprinting clear` +
               (hostile ? ` of the ${hostile.name}` : ""),
           );
           bot.pathfinder.setMovements(safeMoves(bot));
@@ -441,14 +438,14 @@ export async function createBot(events: BrainEvents, roleConfig: BotRoleConfig =
       "campfire",
     ]);
     bot.inventory.on("updateSlot", (slot: number, oldItem: any, newItem: any) => {
-      const was = oldItem && KIT_ITEMS.has(oldItem.name) ? `${oldItem.count}x${oldItem.name}` : null;
-      const now = newItem && KIT_ITEMS.has(newItem.name) ? `${newItem.count}x${newItem.name}` : null;
+      const was = oldItem && KIT_ITEMS.has(oldItem.name) ? `${oldItem.count}x ${oldItem.name}` : null;
+      const now = newItem && KIT_ITEMS.has(newItem.name) ? `${newItem.count}x ${newItem.name}` : null;
       if (!was && !now) return;
       if (was === now) return;
       const p = bot.entity?.position?.floored();
       const doing = getActiveSkillName(bot) ?? "no-skill";
       console.log(
-        `[Kit] ${roleConfig.name} slot${slot}: ${was ?? "(empty)"} -> ${now ?? "(empty)"} at ${p?.x},${p?.y},${p?.z} during${doing}`,
+        `[Kit] ${roleConfig.name} slot ${slot}: ${was ?? "(empty)"} -> ${now ?? "(empty)"} at ${p?.x},${p?.y},${p?.z} during ${doing}`,
       );
     });
 
@@ -459,15 +456,14 @@ export async function createBot(events: BrainEvents, roleConfig: BotRoleConfig =
       startViewer(bot, roleConfig.viewerPort);
     }
 
-    // 🎥 TÍCH HỢP VIEW 3D F5 TRỰC TRUYỀN BẰNG PRISMARINE-VIEWER
+    // 🎥 TÍCH HỢP VIEW 3D F5 BẰNG PRISMARINE-VIEWER
     try {
-      // Tự động phân bổ cổng theo bot (Atlas: 3000, Flora: 3001, Forge: 3002...)
       const portOffset = BOT_ROSTER.findIndex((b) => b.name === roleConfig.name);
       const vPort = 3000 + (portOffset >= 0 ? portOffset : 0);
 
       mineflayerViewer(bot, {
         port: vPort,
-        firstPerson: false, // Góc nhìn F5 (thứ 3 từ phía sau quan sát)
+        firstPerson: false,
         viewDistance: 6,
       });
       console.log(`[3D-Viewer] 🎥 ${roleConfig.name} View 3D live at http://localhost:${vPort}`);
