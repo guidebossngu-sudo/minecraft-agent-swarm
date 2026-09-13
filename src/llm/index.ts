@@ -25,6 +25,28 @@ function thinkFor(model?: string | null): boolean | "low" | "medium" | "high" {
   return safeModel.includes("gpt-oss") ? "low" : false;
 }
 
+/**
+ * Helper an toàn để lấy Model ID theo thứ tự ưu tiên
+ */
+function resolveModel(role: "planner" | "executor" | "reactive" | "critic"): string {
+  const models = config.llm?.models;
+  const openai = config.openai;
+  
+  if (role === "planner") {
+    return models?.planner || process.env.STRATEGIC_MODEL || openai?.model || "agy/gemini-3.7-flash-high";
+  }
+  if (role === "executor") {
+    return models?.executor || process.env.FAST_MODEL || openai?.fastModel || "agy/gpt-oss-120b-medium";
+  }
+  if (role === "reactive") {
+    return models?.reactive || process.env.REACTIVE_MODEL || process.env.FAST_MODEL || openai?.reactiveModel || "agy/gpt-oss-120b-medium";
+  }
+  if (role === "critic") {
+    return models?.critic || process.env.CRITIC_MODEL || openai?.criticModel || "agy/claude-sonnet-4-6";
+  }
+  return process.env.STRATEGIC_MODEL || "agy/gemini-3.7-flash-high";
+}
+
 const llmLog = createLogger();
 
 export interface LLMTool {
@@ -214,7 +236,7 @@ export async function queryStrategic(
   ];
 
   try {
-    const targetModel = config.llm?.model || config.llm?.fastModel;
+    const targetModel = resolveModel("planner");
     const response = await chat({
       model: targetModel,
       messages,
@@ -264,7 +286,7 @@ export async function queryReactive(
   ];
 
   try {
-    const targetModel = config.llm?.fastModel || config.llm?.model;
+    const targetModel = resolveModel("reactive");
     const response = await chat({
       model: targetModel,
       messages,
@@ -301,7 +323,7 @@ export async function queryCritic(
   ];
 
   try {
-    const targetModel = config.llm?.fastModel || config.llm?.model;
+    const targetModel = resolveModel("critic");
     const response = await chat({
       model: targetModel,
       messages,
@@ -405,7 +427,7 @@ export async function queryLLM(
   ];
 
   try {
-    const targetModel = config.llm?.fastModel || config.llm?.model;
+    const targetModel = resolveModel("executor");
     let response = await chat({
       model: targetModel,
       messages,
@@ -445,7 +467,7 @@ export async function queryLLM(
 
 export async function chatWithLLM(prompt: string, context: string, roleConfig?: { name: string }): Promise<string> {
   try {
-    const targetModel = config.llm?.fastModel || config.llm?.model;
+    const targetModel = resolveModel("executor");
     const response = await chat({
       model: targetModel,
       think: thinkFor(targetModel),
